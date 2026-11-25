@@ -266,7 +266,7 @@ function renderNow() {
   applyTheme();
   const app = $('#app');
   if (!S.settings.onboarded) { app.innerHTML = viewOnboarding(); return; }
-  if (S.settings.pw && !ui.unlocked) { app.innerHTML = viewLock(); setTimeout(() => $('#lock-pw') && $('#lock-pw').focus(), 50); return; }
+  if (S.settings.pw && !ui.unlocked) { app.innerHTML = viewLock(); if (!$('.alert.install')) setTimeout(() => $('#lock-pw') && $('#lock-pw').focus(), 50); return; }
   if (ui.tut !== null) { app.innerHTML = viewTutorial(); return; }
   if (!S.profiles.length) S.profiles.push(newProfile('Yo', 0));
   if (!S.active || (S.active !== 'family' && !profile())) S.active = S.profiles[0].id;
@@ -409,7 +409,7 @@ window.addEventListener('appinstalled', () => { installPrompt = null; toast(t('i
 function installBanner(force) {
   if (isStandalone() || (!force && S.settings.installHide)) return '';
   let how = '';
-  if (installPrompt) how = `<button class="btn sm primary" data-act="install">${esc(t('installBtn'))}</button>`;
+  if (installPrompt) how = `<button type="button" class="btn sm primary" data-act="install">${esc(t('installBtn'))}</button>`;
   else if (isIOS()) how = `<span class="small">${esc(t('installIOS'))}</span>`;
   else if (isMobile()) how = `<span class="small">${esc(t('installAndroid'))}</span>`;
   else if (!force) return '';
@@ -417,7 +417,7 @@ function installBanner(force) {
   return `<div class="alert info install">
     <img src="icons/icon-192.png" alt="" width="40" height="40" style="border-radius:10px;flex:none">
     <div class="stack" style="flex:1;gap:6px"><b>${esc(t('installTitle'))}</b><span class="small">${esc(t('installText'))}</span>
-      <div class="row wrap">${how}${force ? '' : `<button class="btn sm ghost" data-act="install-later">${esc(t('installLater'))}</button>`}</div></div></div>`;
+      <div class="row wrap">${how}${force ? '' : `<button type="button" class="btn sm ghost" data-act="install-later">${esc(t('installLater'))}</button>`}</div></div></div>`;
 }
 
 function viewFamilyHome() {
@@ -708,7 +708,8 @@ function viewTutorial() {
 
 // ---------- Bloqueo ----------
 function viewLock() {
-  return `<div class="flow"><form class="flow-card card" data-form="unlock">${LOGO}<h1>${esc(t('locked'))}</h1>
+  // antes de pedir la contraseña, sugiere instalar la app si se abrió desde el navegador
+  return `<div class="flow"><form class="flow-card card" data-form="unlock">${installBanner(false)}${LOGO}<h1>${esc(t('locked'))}</h1>
     <input class="input" type="password" id="lock-pw" autocomplete="current-password" aria-label="${esc(t('password'))}">
     <p class="small neg hidden" id="lock-err">${esc(t('wrongPw'))}</p>
     <button class="btn primary block" type="submit">${icon('lock')}${esc(t('unlock'))}</button>
