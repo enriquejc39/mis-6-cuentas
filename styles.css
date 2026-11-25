@@ -99,6 +99,7 @@ p { margin: 0; }
   border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 10px 14px; min-height: 44px;
   cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
+.btn svg { width: 18px; height: 18px; flex: none; }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
 .btn.danger { color: var(--danger); }
 .btn.ghost { border-color: transparent; background: transparent; }
@@ -140,6 +141,11 @@ label.field { display: grid; gap: 6px; font-size: .9rem; color: var(--muted); }
 .status.ok { background: var(--ok-soft); color: var(--ok); }
 .status.warn { background: var(--warn-soft); color: var(--warn); }
 .status.bad { background: var(--danger-soft); color: var(--danger); }
+
+/* Ingresos extraordinarios */
+.extra-box { border: 1px dashed var(--border); border-radius: 12px; padding: 10px 12px; display: grid; gap: 8px; }
+.extra-total { border-top: 1px solid var(--border); padding-top: 8px; font-weight: 600; }
+.alert.install { align-items: center; }
 
 /* Donut */
 .donut-wrap { display: grid; grid-template-columns: minmax(140px, 180px) 1fr; gap: 16px; align-items: center; }

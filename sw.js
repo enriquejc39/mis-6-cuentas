@@ -1,6 +1,6 @@
 // Service worker: permite usar la app sin internet.
 // Cambia VERSION cada vez que publiques cambios para que los celulares se actualicen.
-const VERSION = 'mis6cuentas-v1';
+const VERSION = 'mis6cuentas-v2';
 const SHELL = ['./', './index.html', './styles.css', './i18n.js', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 const XLSX_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';

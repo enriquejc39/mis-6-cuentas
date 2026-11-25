@@ -86,17 +86,22 @@ function getMonth(p, key, create = true) {
   const before = keys.filter((k) => k < key), after = keys.filter((k) => k > key);
   const src = before.length ? before[before.length - 1] : after[0];
   const prev = src ? p.months[src] : null;
-  const m = { income: prev ? prev.income : 0, pct: { ...(prev ? prev.pct : p.rule) }, exp: [] };
+  // los ingresos extraordinarios no se copian: son propios de cada mes
+  const m = { income: prev ? prev.income : 0, extra: [], pct: { ...(prev ? prev.pct : p.rule) }, exp: [] };
   p.months[key] = m;
   return m;
 }
 function peekMonth(p, key) { return p.months[key] || null; }
+const extraSum = (m) => roundM((m.extra || []).reduce((a, e) => a + e.amount, 0));
+const totalIncome = (m) => roundM((m.income || 0) + extraSum(m));
+const hasData = (m) => !!(m && (totalIncome(m) || m.exp.length));
 
 function calc(p, m) {
-  const r = { income: m.income, leaf: {}, top: {}, assigned: 0, spent: 0, pctSum: 0 };
+  const total = totalIncome(m);
+  const r = { base: m.income || 0, extra: extraSum(m), income: total, leaf: {}, top: {}, assigned: 0, spent: 0, pctSum: 0 };
   for (const id of LEAVES) {
     const pct = Number(m.pct[id]) || 0;
-    const amt = roundM(m.income * pct / 100);
+    const amt = roundM(total * pct / 100);
     const spent = m.exp.filter((e) => e.acc === id).reduce((a, e) => a + e.amount, 0);
     r.leaf[id] = { pct, amt, spent, left: amt - spent };
     r.assigned += amt; r.spent += spent; r.pctSum += pct;
@@ -303,13 +308,15 @@ function viewHome() {
   const tipN = (Math.floor(Date.now() / 864e5) % 10) + 1;
   const segs = TOPS.map((id) => ({ value: r.top[id].amt, color: COLORS[id], label: accName(id, p) }));
   return `
+  ${installBanner()}
   ${reminderDue() ? `<div class="alert info">${icon('info')}<div class="stack" style="flex:1"><span>${esc(t('reminderDue'))}</span><div><button class="btn sm primary" data-act="reminder-ok">${esc(t('reviewNow'))}</button></div></div></div>` : ''}
   <div class="grid-2">
     <section class="card">
-      <label class="field" for="income">${esc(t('income'))}
+      <label class="field" for="income">${esc(t('incomeFixed'))}
         <input id="income" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" data-change="income" value="${m.income ? plain(m.income) : ''}" placeholder="${esc(money(0))}" aria-describedby="income-hint">
       </label>
       <span id="income-hint" class="small muted">${esc(t('incomeHint'))} · ${esc(S.settings.currency)}</span>
+      ${extraBlock(m, r)}
       <div class="stats">
         <div class="stat"><div class="label">${esc(t('assigned'))}</div><div class="value num">${money(r.assigned)}</div></div>
         <div class="stat"><div class="label">${esc(t('spent'))}</div><div class="value num">${money(r.spent)}</div></div>
@@ -319,7 +326,7 @@ function viewHome() {
     </section>
     <section class="card">
       <div class="card-head"><h2>${esc(t('distribution'))}</h2></div>
-      ${m.income > 0 ? `<div class="donut-wrap">${donut(segs, money(r.assigned), fmtPct(r.pctSum) + '%')}
+      ${r.income > 0 ? `<div class="donut-wrap">${donut(segs, money(r.assigned), fmtPct(r.pctSum) + '%')}
         <div class="legend">${TOPS.map((id) => `<div><i class="dot" style="background:${COLORS[id]}"></i><span>${esc(accName(id, p))} <span class="muted">${fmtPct(r.top[id].pct)}%</span></span><b class="num">${money(r.top[id].amt)}</b></div>`).join('')}</div></div>`
         : `<p class="muted">${esc(t('noIncome'))}</p>`}
     </section>
@@ -355,6 +362,64 @@ function badge(o) {
   if (o.amt > 0 && (o.spent / o.amt) * 100 >= S.settings.alertPct) return `<span class="badge warn">${Math.round((o.spent / o.amt) * 100)}%</span>`;
   return '';
 }
+// ---------- Ingresos extraordinarios ----------
+function extraBlock(m, r) {
+  const n = (m.extra || []).length;
+  return `<div class="extra-box">
+    <div class="row between wrap">
+      <span class="stack" style="gap:0"><span class="small muted">${esc(t('extraIncome'))}${n ? ` · ${n}` : ''}</span><b class="num pos">+${money(r.extra)}</b></span>
+      <button class="btn sm" data-act="extras">${icon('plus')}${esc(t('extraIncome'))}</button>
+    </div>
+    ${r.extra > 0 ? `<div class="row between small extra-total"><span>${esc(t('incomeTotal'))}</span><b class="num">${money(r.income)}</b></div>` : ''}
+  </div>`;
+}
+function openExtras() {
+  const p = profile(), m = getMonth(p, S.month), list = (m.extra || []).slice().sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id));
+  const defDate = S.month === monthKey(new Date()) ? todayISO() : S.month + '-01';
+  const rows = list.map((e) => `<div class="exp"><div class="stack" style="gap:0;min-width:0"><b style="overflow:hidden;text-overflow:ellipsis">${esc(e.desc || t('extraIncome'))}</b><span class="small muted">${esc(e.date)}</span></div>
+    <b class="num pos">+${money(e.amount)}</b><button type="button" class="icon-btn" data-act="del-extra" data-id="${e.id}" aria-label="${esc(t('delete'))}">${icon('trash')}</button></div>`).join('');
+  modal(`<div class="card-head"><h2>${esc(t('extraIncome'))}</h2><button type="button" class="icon-btn" data-act="modal-close" aria-label="${esc(t('close'))}">✕</button></div>
+    <p class="small muted">${esc(t('extraHelp'))}</p>
+    <label class="field">${esc(t('amount'))}<input name="amount" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" placeholder="${esc(money(0))}" required></label>
+    <label class="field">${esc(t('expenseDesc'))}<input name="desc" class="input" maxlength="80" placeholder="${esc(t('extraDescPh'))}"></label>
+    <label class="field">${esc(t('expenseDate'))}<input name="date" type="date" class="input" value="${defDate}" min="${S.month}-01" max="${S.month}-31"></label>
+    <button class="btn primary block">${icon('plus')}${esc(t('add'))}</button>
+    <div class="row between"><b>${esc(monthLabel(S.month))}</b><b class="num pos">+${money(extraSum(m))}</b></div>
+    <div>${rows || `<p class="muted small">${esc(t('extraNone'))}</p>`}</div>`,
+  (fd) => {
+    const amount = parseMoney(fd.get('amount'));
+    if (!amount) { toast(t('invalidAmount'), 'warn'); return true; }
+    let date = String(fd.get('date') || todayISO());
+    if (!date.startsWith(S.month)) date = S.month + '-01';
+    if (!m.extra) m.extra = [];
+    m.extra.push({ id: uid(), amount, desc: String(fd.get('desc') || '').trim(), date });
+    save(); render(); openExtras();
+    toast(t('extraAdded', { r: money(amount) }));
+    return true;
+  });
+}
+
+// ---------- Instalación en el celular ----------
+let installPrompt = null;
+const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isMobile = () => isIOS() || /android|mobile/i.test(navigator.userAgent);
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; if (S.settings.onboarded) deferRender(); else render(); });
+window.addEventListener('appinstalled', () => { installPrompt = null; toast(t('installed')); deferRender(); });
+function installBanner(force) {
+  if (isStandalone() || (!force && S.settings.installHide)) return '';
+  let how = '';
+  if (installPrompt) how = `<button class="btn sm primary" data-act="install">${esc(t('installBtn'))}</button>`;
+  else if (isIOS()) how = `<span class="small">${esc(t('installIOS'))}</span>`;
+  else if (isMobile()) how = `<span class="small">${esc(t('installAndroid'))}</span>`;
+  else if (!force) return '';
+  else how = `<span class="small">${esc(t('installDesktop'))}</span>`;
+  return `<div class="alert info install">
+    <img src="icons/icon-192.png" alt="" width="40" height="40" style="border-radius:10px;flex:none">
+    <div class="stack" style="flex:1;gap:6px"><b>${esc(t('installTitle'))}</b><span class="small">${esc(t('installText'))}</span>
+      <div class="row wrap">${how}${force ? '' : `<button class="btn sm ghost" data-act="install-later">${esc(t('installLater'))}</button>`}</div></div></div>`;
+}
+
 function viewFamilyHome() {
   const { agg, per } = familyCalc(S.month);
   const segs = TOPS.map((id) => ({ value: agg.top[id].amt, color: COLORS[id], label: t('acc_' + id) }));
@@ -385,14 +450,15 @@ function viewBudget() {
     const l = r.leaf[id];
     return `<div class="alloc ${cls}"><div class="stack" style="gap:0;min-width:0"><span class="acc-title"><i class="dot" style="background:${COLORS[id]}"></i><span class="name">${esc(accName(id, p))}</span></span><span class="small muted" style="overflow:hidden;text-overflow:ellipsis">${esc(accDesc(id, p))}</span></div>
       <div class="pct-input"><input class="input num" inputmode="decimal" aria-label="% ${esc(accName(id, p))}" data-change="pct" data-id="${id}" value="${fmtPct(l.pct)}"></div>
-      <input class="input num" inputmode="${dec() ? 'decimal' : 'numeric'}" aria-label="${esc(t('amount'))} ${esc(accName(id, p))}" data-change="amt" data-id="${id}" value="${plain(l.amt)}" ${m.income ? '' : 'disabled'}></div>`;
+      <input class="input num" inputmode="${dec() ? 'decimal' : 'numeric'}" aria-label="${esc(t('amount'))} ${esc(accName(id, p))}" data-change="amt" data-id="${id}" value="${plain(l.amt)}" ${r.income ? '' : 'disabled'}></div>`;
   };
   const c1 = r.top.c1;
   return `
   <section class="card">
     <div class="card-head"><h2>${esc(t('budgetTitle'))}</h2></div>
     <p class="small muted">${esc(t('budgetHelp'))}</p>
-    <label class="field" for="income2">${esc(t('income'))}<input id="income2" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" data-change="income" value="${m.income ? plain(m.income) : ''}" placeholder="${esc(money(0))}"></label>
+    <label class="field" for="income2">${esc(t('incomeFixed'))}<input id="income2" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" data-change="income" value="${m.income ? plain(m.income) : ''}" placeholder="${esc(money(0))}"></label>
+    ${extraBlock(m, r)}
     ${statusLine(r)}
     <div class="row between small"><span class="muted">${esc(t('sumPct'))}</span><b class="num ${Math.abs(r.pctSum - 100) > 0.05 ? 'neg' : 'pos'}">${fmtPct(r.pctSum)}%</b></div>
   </section>
@@ -454,7 +520,7 @@ function viewExpenses() {
 // ---------- Historial ----------
 function monthsWithData(list) {
   const keys = new Set();
-  list.forEach((p) => Object.keys(p.months).forEach((k) => { const m = p.months[k]; if (m.income || m.exp.length) keys.add(k); }));
+  list.forEach((p) => Object.keys(p.months).forEach((k) => { if (hasData(p.months[k])) keys.add(k); }));
   return [...keys].sort();
 }
 function viewHistory() {
@@ -487,15 +553,16 @@ function viewHistory() {
 function recommendations(p) {
   const out = [];
   const m = getMonth(p, S.month), r = calc(p, m);
-  if (!m.income) return [t('rec_noIncome'), t('tip1')];
+  if (!r.income) return [t('rec_noIncome'), t('tip1')];
   if (r.diff > 0 && Math.abs(r.diff) >= (dec() ? 0.01 : 1)) out.push(t('rec_unassigned', { r: money(r.diff) }));
   if (r.diff < 0) out.push(t('rec_over', { r: money(-r.diff) }));
   LEAVES.forEach((id) => { if (r.leaf[id].spent > r.leaf[id].amt && r.leaf[id].spent > 0) out.push(t('rec_overspent', { a: accName(id, p) })); });
   if (!r.leaf.emerg.pct) out.push(t('rec_noEmerg'));
   if (!r.leaf.ltinv.pct) out.push(t('rec_noInv'));
-  if (r.leaf.fixed.pct > 50 || (r.leaf.fixed.spent > m.income * 0.5)) out.push(t('rec_fixedHigh'));
+  if (r.leaf.fixed.pct > 50 || (r.leaf.fixed.spent > r.income * 0.5)) out.push(t('rec_fixedHigh'));
+  if (r.extra > 0) out.push(t('rec_extra', { r: money(r.extra) }));
   const pm = peekMonth(p, shiftMonth(S.month, -1));
-  if (pm && pm.income) {
+  if (pm && totalIncome(pm)) {
     const pr = calc(p, pm);
     ['free', 'fun', 'fixed'].forEach((id) => { const a = pr.leaf[id].spent, b = r.leaf[id].spent; if (a > 0 && b > a * 1.2) out.push(t('rec_rise', { a: accName(id, p), p: Math.round(((b - a) / a) * 100) })); });
     if (pr.leaf.free.left > 0 && pm.exp.length) out.push(t('rec_leftover', { r: money(pr.leaf.free.left), a: accName('free', p) }));
@@ -547,6 +614,7 @@ function viewMore() {
         <div class="row wrap">${s.pw ? `<button class="btn" data-act="pw-set">${esc(t('changePassword'))}</button><button class="btn danger" data-act="pw-remove">${esc(t('removePassword'))}</button>` : `<button class="btn" data-act="pw-set">${esc(t('setPassword'))}</button>`}</div>
         <div class="set-row"><span>${esc(t('biometric'))}</span><span class="badge warn">${esc(t('soon'))}</span></div>
       </section>
+      ${isStandalone() ? '' : `<section class="card"><h2>${esc(t('installSection'))}</h2>${installBanner(true)}</section>`}
       <section class="card"><h2>${esc(t('data'))}</h2>
         <button class="btn primary" data-act="excel">${esc(t('exportExcel'))}</button>
         <div class="row wrap"><button class="btn" data-act="backup">${esc(t('backup'))}</button><button class="btn" data-act="restore">${esc(t('restore'))}</button></div>
@@ -566,6 +634,7 @@ function viewOnboarding() {
   let body = '';
   if (step === 0) {
     body = `${LOGO}<h1>${esc(t('welcome'))}</h1><p class="muted">${esc(t('tagline'))}</p>
+      ${installBanner(false)}
       <h2>${esc(t('chooseLang'))}</h2>
       <div class="stack"><button class="choice" data-act="lang" data-v="es" aria-pressed="${s.lang === 'es'}"><b>Español</b></button><button class="choice" data-act="lang" data-v="en" aria-pressed="${s.lang === 'en'}"><b>English</b></button></div>
       <button class="btn primary block" data-act="onb-next">${esc(t('next'))}</button>`;
@@ -679,34 +748,37 @@ function reportRows() {
   const L = (k) => t(k);
   const summary = [[L('member'), L('month'), L('expenseAcc'), '%', L('assigned'), L('spent'), L('remaining')]];
   const expenses = [[L('member'), L('month'), L('expenseDate'), L('expenseAcc'), L('expenseDesc'), L('amount')]];
-  const history = [[L('member'), L('month'), L('income'), L('assigned'), L('spent'), L('balance'), L('unassigned')]];
+  const history = [[L('member'), L('month'), L('incomeFixed'), L('extraIncome'), L('incomeTotal'), L('assigned'), L('spent'), L('balance'), L('unassigned')]];
+  const extras = [[L('member'), L('month'), L('expenseDate'), L('expenseDesc'), L('amount')]];
   S.profiles.forEach((p) => {
     Object.keys(p.months).sort().forEach((k) => {
-      const m = p.months[k]; if (!m.income && !m.exp.length) return;
+      const m = p.months[k]; if (!hasData(m)) return;
       const r = calc(p, m);
-      history.push([p.name, k, r.income, r.assigned, r.spent, r.available, r.diff]);
+      history.push([p.name, k, r.base, r.extra, r.income, r.assigned, r.spent, r.available, r.diff]);
+      (m.extra || []).slice().sort((a, b) => a.date.localeCompare(b.date)).forEach((e) => extras.push([p.name, k, e.date, e.desc || '', e.amount]));
       LEAVES.forEach((id) => summary.push([p.name, k, (C1_KIDS.includes(id) ? accName('c1', p) + ' › ' : '') + accName(id, p), Math.round(r.leaf[id].pct * 10) / 10, r.leaf[id].amt, r.leaf[id].spent, r.leaf[id].left]));
       m.exp.slice().sort((a, b) => a.date.localeCompare(b.date)).forEach((e) => expenses.push([p.name, k, e.date, accName(e.acc, p), e.desc || '', e.amount]));
     });
   });
-  return { summary, expenses, history };
+  return { summary, expenses, history, extras };
 }
 async function exportExcel() {
-  const { summary, expenses, history } = reportRows();
+  const { summary, expenses, history, extras } = reportRows();
   const fname = 'mis-6-cuentas-' + S.month;
   try {
     const X = await loadXLSX();
     const wb = X.utils.book_new();
     const add = (rows, name, widths) => { const ws = X.utils.aoa_to_sheet(rows); ws['!cols'] = widths.map((w) => ({ wch: w })); X.utils.book_append_sheet(wb, ws, name); };
     const es = S.settings.lang === 'es';
-    add(history, es ? 'Resumen mensual' : 'Monthly summary', [16, 10, 14, 14, 14, 14, 14]);
+    add(history, es ? 'Resumen mensual' : 'Monthly summary', [16, 10, 14, 16, 14, 14, 14, 14, 14]);
     add(summary, es ? 'Cuentas' : 'Accounts', [16, 10, 40, 8, 14, 14, 14]);
     add(expenses, es ? 'Gastos' : 'Expenses', [16, 10, 12, 28, 30, 14]);
+    add(extras, es ? 'Ingresos extraordinarios' : 'Extra income', [16, 10, 12, 30, 14]);
     X.writeFile(wb, fname + '.xlsx');
     toast(t('exported'));
   } catch (e) {
     // sin internet la primera vez: exporta CSV, que Excel también abre
-    const csv = [...history, [], ...summary, [], ...expenses].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
+    const csv = [...history, [], ...summary, [], ...expenses, [], ...extras].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
     download(fname + '.csv', new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
     toast(t('exported') + ' (CSV)');
   }
@@ -743,6 +815,12 @@ document.addEventListener('click', async (e) => {
     case 'recommended': getMonth(p, S.month).pct = { ...RECOMMENDED }; save(); render(); toast(t('ruleApplied')); break;
     case 'del-exp': { const m = getMonth(p, S.month); m.exp = m.exp.filter((x) => x.id !== el.dataset.id); save(); render(); toast(t('expenseDeleted')); break; }
     case 'reminder-ok': S.settings.reminder.last = Date.now(); save(); ui.tab = 'expenses'; render(); break;
+    case 'extras': openExtras(); break;
+    case 'del-extra': { const m = getMonth(p, S.month); m.extra = (m.extra || []).filter((x) => x.id !== el.dataset.id); save(); render(); openExtras(); break; }
+    case 'install':
+      if (installPrompt) { const ev = installPrompt; installPrompt = null; ev.prompt(); try { await ev.userChoice; } catch (err) {} render(); }
+      break;
+    case 'install-later': S.settings.installHide = true; save(); render(); break;
     case 'mode':
       S.settings.mode = el.dataset.v;
       if (S.settings.mode === 'individual' && S.active === 'family') S.active = S.profiles[0].id;
@@ -827,8 +905,8 @@ document.addEventListener('change', (e) => {
       getMonth(p, S.month).pct[el.dataset.id] = isFinite(v) ? Math.max(0, Math.min(100, v)) : 0; break;
     }
     case 'amt': {
-      const m = getMonth(p, S.month); if (!m.income) break;
-      m.pct[el.dataset.id] = Math.max(0, (parseMoney(el.value) / m.income) * 100); break;
+      const m = getMonth(p, S.month), tot = totalIncome(m); if (!tot) break;
+      m.pct[el.dataset.id] = Math.max(0, (parseMoney(el.value) / tot) * 100); break;
     }
     case 'exp-filter': ui.expFilter = el.value; break;
     case 'currency': if (!S.settings.onboarded) syncOnbInputs(); S.settings.currency = el.value; break;
