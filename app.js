@@ -16,6 +16,7 @@ const MEMBER_COLORS = ['#0E7C66', '#3B6FE0', '#E0508A', '#E39B12', '#8B5CF6', '#
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'MXN', 'ARS', 'PEN', 'COP'];
 const ZERO_DEC = ['CLP', 'COP'];
 const KEY = 'mis6cuentas.v1';
+const PER_MEMBER = ['budget', 'expenses', 'debts']; // pestañas que se editan por miembro, no en la vista familiar
 
 // ---------- Estado ----------
 let S = load();
@@ -99,9 +100,17 @@ const hasData = (m) => !!(m && (totalIncome(m) || m.exp.length));
 function calc(p, m) {
   const total = totalIncome(m);
   const r = { base: m.income || 0, extra: extraSum(m), income: total, leaf: {}, top: {}, assigned: 0, spent: 0, pctSum: 0 };
-  for (const id of LEAVES) {
-    const pct = Number(m.pct[id]) || 0;
-    const amt = roundM(total * pct / 100);
+  // Reparte con "mayor resto": redondear cada cuenta por separado hacía que la suma
+  // quedara $1-$2 por encima o por debajo del ingreso y mostrara un falso faltante.
+  const f = Math.pow(10, dec());
+  const pcts = LEAVES.map((id) => Math.max(0, Number(m.pct[id]) || 0));
+  const raw = pcts.map((pc) => (total * pc / 100) * f);
+  const units = raw.map((x) => Math.floor(x + 1e-6));
+  let rest = Math.round(total * pcts.reduce((a, b) => a + b, 0) / 100 * f) - units.reduce((a, b) => a + b, 0);
+  raw.map((x, i) => [x - units[i], i]).sort((a, b) => b[0] - a[0]).forEach(([, i]) => { if (rest > 0 && pcts[i] > 0) { units[i]++; rest--; } });
+  for (const [i, id] of LEAVES.entries()) {
+    const pct = pcts[i];
+    const amt = units[i] / f;
     const spent = m.exp.filter((e) => e.acc === id).reduce((a, e) => a + e.amount, 0);
     r.leaf[id] = { pct, amt, spent, left: amt - spent };
     r.assigned += amt; r.spent += spent; r.pctSum += pct;
@@ -198,6 +207,7 @@ const ICON = {
   exp: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/>',
   hist: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+  debt: '<path d="M4 7h16v12H4z"/><path d="M8 7V5h8v2M8 13h8M12 11v4"/>',
   left: '<path d="M15 6l-6 6 6 6"/>', right: '<path d="M9 6l6 6-6 6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   warn: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
@@ -222,7 +232,8 @@ function donut(segs, center, sub) {
     <text x="21" y="25" text-anchor="middle" style="font-size:2.6px;fill:var(--muted)">${esc(sub)}</text></svg>`;
 }
 function barChart(groups, series) { // groups: [{label, values:[...]}], series: [{name,color}]
-  const W = 640, H = 220, padL = 8, padB = 26, padT = 10;
+  // ancho según la cantidad de grupos: así el texto conserva un tamaño legible en el celular
+  const W = Math.max(360, groups.length * 64), H = 200, padL = 4, padB = 24, padT = 10;
   const max = Math.max(1, ...groups.flatMap((g) => g.values));
   const gw = (W - padL * 2) / Math.max(1, groups.length);
   const bw = Math.min(28, (gw - 10) / series.length);
@@ -271,8 +282,8 @@ function renderNow() {
   if (!S.profiles.length) S.profiles.push(newProfile('Yo', 0));
   if (!S.active || (S.active !== 'family' && !profile())) S.active = S.profiles[0].id;
   if (S.active === 'family' && S.settings.mode !== 'family') S.active = S.profiles[0].id;
-  if (isFamilyView() && (ui.tab === 'budget' || ui.tab === 'expenses')) ui.tab = 'home';
-  const views = { home: viewHome, budget: viewBudget, expenses: viewExpenses, history: viewHistory, more: viewMore };
+  if (isFamilyView() && PER_MEMBER.includes(ui.tab)) ui.tab = 'home';
+  const views = { home: viewHome, budget: viewBudget, expenses: viewExpenses, debts: viewDebts, history: viewHistory, more: viewMore };
   app.innerHTML = `<div class="shell">${topbar()}<main class="content" id="main">${views[ui.tab]()}</main>${nav()}</div>`;
 }
 function topbar() {
@@ -290,8 +301,8 @@ function topbar() {
 }
 function nav() {
   const fam = isFamilyView();
-  const items = [['home', 'home', 'navHome'], ['budget', 'budget', 'navBudget'], ['expenses', 'exp', 'navExpenses'], ['history', 'hist', 'navHistory'], ['more', 'more', 'navMore']];
-  return `<nav class="nav" aria-label="Principal">${items.map(([id, ic, k]) => `<button data-act="tab" data-tab="${id}" ${ui.tab === id ? 'aria-current="page"' : ''} ${fam && (id === 'budget' || id === 'expenses') ? 'disabled style="opacity:.35"' : ''}>${icon(ic)}<span>${esc(t(k))}</span></button>`).join('')}</nav>`;
+  const items = [['home', 'home', 'navHome'], ['budget', 'budget', 'navBudget'], ['expenses', 'exp', 'navExpenses'], ['debts', 'debt', 'navDebts'], ['history', 'hist', 'navHistory'], ['more', 'more', 'navMore']];
+  return `<nav class="nav" aria-label="Principal">${items.map(([id, ic, k]) => `<button data-act="tab" data-tab="${id}" ${ui.tab === id ? 'aria-current="page"' : ''} ${fam && PER_MEMBER.includes(id) ? 'disabled style="opacity:.35"' : ''}>${icon(ic)}<span>${esc(t(k))}</span></button>`).join('')}</nav>`;
 }
 
 // ---------- Inicio ----------
@@ -305,6 +316,7 @@ function viewHome() {
   if (isFamilyView()) return viewFamilyHome();
   const p = profile(), m = getMonth(p, S.month), r = calc(p, m);
   const alerts = alertsFor(r, p);
+  debtsDue(p, S.month).forEach((d) => alerts.unshift({ kind: 'warn', text: t('debtDueAlert', { n: d.name, r: money(Math.min(d.cuota, debtLeft(d))) }) }));
   const tipN = (Math.floor(Date.now() / 864e5) % 10) + 1;
   const segs = TOPS.map((id) => ({ value: r.top[id].amt, color: COLORS[id], label: accName(id, p) }));
   return `
@@ -334,6 +346,7 @@ function viewHome() {
   <div class="grid-2">
     <section class="card"><div class="card-head"><h2>${esc(t('byAccount'))}</h2><button class="btn sm" data-act="tab" data-tab="expenses">${icon('plus')}${esc(t('addExpense'))}</button></div>
       <div>${TOPS.map((id) => accRow(id, r, p)).join('')}</div></section>
+    ${r.income > 0 ? planVsReal(r, p) : ''}
     <div class="stack" style="gap:16px">
       <section class="card"><h2>${esc(t('alerts'))}</h2>
         ${alerts.length ? alerts.map((a) => `<div class="alert ${a.kind}">${icon('warn')}<span>${esc(a.text)}</span></div>`).join('') : `<p class="muted small">${esc(t('noAlerts'))}</p>`}</section>
@@ -376,8 +389,8 @@ function extraBlock(m, r) {
 function openExtras() {
   const p = profile(), m = getMonth(p, S.month), list = (m.extra || []).slice().sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id));
   const defDate = S.month === monthKey(new Date()) ? todayISO() : S.month + '-01';
-  const rows = list.map((e) => `<div class="exp"><div class="stack" style="gap:0;min-width:0"><b style="overflow:hidden;text-overflow:ellipsis">${esc(e.desc || t('extraIncome'))}</b><span class="small muted">${esc(e.date)}</span></div>
-    <b class="num pos">+${money(e.amount)}</b><button type="button" class="icon-btn" data-act="del-extra" data-id="${e.id}" aria-label="${esc(t('delete'))}">${icon('trash')}</button></div>`).join('');
+  const rows = list.map((e) => `<div class="exp tappable" data-act="extra-menu" data-id="${e.id}" role="button" tabindex="0"><div class="stack" style="gap:0;min-width:0"><b style="overflow:hidden;text-overflow:ellipsis">${esc(e.desc || t('extraIncome'))}</b><span class="small muted">${esc(e.date)}</span></div>
+    <b class="num pos">+${money(e.amount)}</b><span class="icon-btn" aria-hidden="true">${icon('more')}</span></div>`).join('');
   modal(`<div class="card-head"><h2>${esc(t('extraIncome'))}</h2><button type="button" class="icon-btn" data-act="modal-close" aria-label="${esc(t('close'))}">✕</button></div>
     <p class="small muted">${esc(t('extraHelp'))}</p>
     <label class="field">${esc(t('amount'))}<input name="amount" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" placeholder="${esc(money(0))}" required></label>
@@ -493,8 +506,8 @@ function viewExpenses() {
       const [y, mo, d] = e.date.split('-').map(Number);
       rows += `<div class="day">${esc(new Intl.DateTimeFormat(locale(), { weekday: 'long', day: 'numeric', month: 'short' }).format(new Date(y, mo - 1, d)))}</div>`;
     }
-    rows += `<div class="exp"><div class="stack" style="gap:0;min-width:0"><b style="overflow:hidden;text-overflow:ellipsis">${esc(e.desc || accName(e.acc, p))}</b><span class="small muted row"><i class="dot" style="background:${COLORS[e.acc]}"></i>${esc(accName(e.acc, p))}</span></div>
-      <b class="num">${money(e.amount)}</b><button class="icon-btn" data-act="del-exp" data-id="${e.id}" aria-label="${esc(t('delete'))}">${icon('trash')}</button></div>`;
+    rows += `<div class="exp tappable" data-act="exp-menu" data-id="${e.id}" role="button" tabindex="0"><div class="stack" style="gap:0;min-width:0"><b style="overflow:hidden;text-overflow:ellipsis">${e.debt ? '💳 ' : ''}${esc(e.desc || accName(e.acc, p))}</b><span class="small muted row"><i class="dot" style="background:${COLORS[e.acc]}"></i>${esc(accName(e.acc, p))}</span></div>
+      <b class="num">${money(e.amount)}</b><span class="icon-btn" aria-hidden="true">${icon('more')}</span></div>`;
   }
   return `
   <div class="grid-2">
@@ -515,6 +528,192 @@ function viewExpenses() {
       <div>${rows || `<p class="muted">${esc(t('noExpenses'))}</p>`}</div>
     </section>
   </div>`;
+}
+
+// ---------- Editar / eliminar gastos e ingresos ----------
+function findExpense(p, id) {
+  for (const k of Object.keys(p.months)) { const e = p.months[k].exp.find((x) => x.id === id); if (e) return { e, k }; }
+  return null;
+}
+function choiceModal(title, detail, editAct, delAct, id, note) {
+  modal(`<h2>${esc(title)}</h2>${detail}${note ? `<p class="small muted">${esc(note)}</p>` : ''}
+    <button type="button" class="btn primary block" data-act="${editAct}" data-id="${id}">${icon('pencil')}${esc(t('edit'))}</button>
+    <button type="button" class="btn block danger" data-act="${delAct}" data-id="${id}">${icon('trash')}${esc(t('delete'))}</button>
+    <button type="button" class="btn ghost block" data-act="modal-close">${esc(t('cancel'))}</button>`, () => {});
+}
+function expenseMenu(id) {
+  const p = profile(), f = findExpense(p, id); if (!f) return;
+  const e = f.e;
+  choiceModal(t('whatToDo'), `<div class="exp" style="border:0"><div class="stack" style="gap:0"><b>${esc(e.desc || accName(e.acc, p))}</b><span class="small muted">${esc(accName(e.acc, p))} · ${esc(e.date)}</span></div><b class="num">${money(e.amount)}</b></div>`,
+    'exp-edit', 'exp-del', id, e.debt ? t('debtLinkedNote') : '');
+}
+function deleteExpense(p, month, id) {
+  const m = p.months[month]; if (!m) return;
+  const e = m.exp.find((x) => x.id === id);
+  if (e && e.debt) { const d = (p.debts || []).find((x) => x.id === e.debt); if (d) d.pays = d.pays.filter((x) => x.id !== e.pay); }
+  m.exp = m.exp.filter((x) => x.id !== id);
+}
+function editExpense(id) {
+  const p = profile(), f = findExpense(p, id); if (!f) return;
+  const e = f.e;
+  modal(`<h2>${esc(t('editExpense'))}</h2>
+    <label class="field">${esc(t('expenseAmount'))}<input name="amount" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" value="${plain(e.amount)}" required></label>
+    <label class="field">${esc(t('expenseAcc'))}<select name="acc" class="input">${accOptions(p, e.acc)}</select></label>
+    <label class="field">${esc(t('expenseDesc'))}<input name="desc" class="input" maxlength="80" value="${esc(e.desc)}"></label>
+    <label class="field">${esc(t('expenseDate'))}<input name="date" type="date" class="input" value="${e.date}" min="${f.k}-01" max="${f.k}-31"></label>
+    <div class="row"><button type="button" class="btn" data-act="modal-close" style="flex:1">${esc(t('cancel'))}</button><button class="btn primary" style="flex:1">${esc(t('save'))}</button></div>`,
+  (fd) => {
+    const amount = parseMoney(fd.get('amount'));
+    if (!amount) { toast(t('invalidAmount'), 'warn'); return true; }
+    e.amount = amount; e.acc = String(fd.get('acc')); e.desc = String(fd.get('desc') || '').trim();
+    const date = String(fd.get('date') || e.date); if (date.startsWith(f.k)) e.date = date;
+    if (e.debt) { const d = (p.debts || []).find((x) => x.id === e.debt), pay = d && d.pays.find((x) => x.id === e.pay); if (pay) { pay.amount = amount; pay.date = e.date; } }
+    save(); render(); toast(t('expenseUpdated'));
+  });
+}
+function extraMenu(id) {
+  const m = getMonth(profile(), S.month), x = (m.extra || []).find((v) => v.id === id); if (!x) return;
+  choiceModal(t('extraWhat'), `<div class="exp" style="border:0"><div class="stack" style="gap:0"><b>${esc(x.desc || t('extraIncome'))}</b><span class="small muted">${esc(x.date)}</span></div><b class="num pos">+${money(x.amount)}</b></div>`, 'extra-edit', 'extra-del', id);
+}
+function editExtra(id) {
+  const m = getMonth(profile(), S.month), x = (m.extra || []).find((v) => v.id === id); if (!x) return;
+  modal(`<h2>${esc(t('editExtra'))}</h2>
+    <label class="field">${esc(t('amount'))}<input name="amount" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" value="${plain(x.amount)}" required></label>
+    <label class="field">${esc(t('expenseDesc'))}<input name="desc" class="input" maxlength="80" value="${esc(x.desc)}"></label>
+    <label class="field">${esc(t('expenseDate'))}<input name="date" type="date" class="input" value="${x.date}" min="${S.month}-01" max="${S.month}-31"></label>
+    <div class="row"><button type="button" class="btn" data-act="extras" style="flex:1">${esc(t('cancel'))}</button><button class="btn primary" style="flex:1">${esc(t('save'))}</button></div>`,
+  (fd) => {
+    const amount = parseMoney(fd.get('amount'));
+    if (!amount) { toast(t('invalidAmount'), 'warn'); return true; }
+    x.amount = amount; x.desc = String(fd.get('desc') || '').trim();
+    const date = String(fd.get('date') || x.date); if (date.startsWith(S.month)) x.date = date;
+    save(); render(); openExtras(); toast(t('extraUpdated')); return true;
+  });
+}
+
+// ---------- Deudas ----------
+const debtPaid = (d) => roundM(d.pays.reduce((a, x) => a + x.amount, 0));
+const debtLeft = (d) => Math.max(0, roundM(d.total - debtPaid(d)));
+const cuotaPaid = (d, month) => d.pays.some((x) => x.kind === 'cuota' && x.month === month);
+const cuotaDue = (d, month) => d.cuota > 0 && debtLeft(d) > 0 && month >= d.start && !cuotaPaid(d, month);
+function debtsDue(p, month) { return (p.debts || []).filter((d) => cuotaDue(d, month)); }
+function removeDebt(p, id) {
+  // los pagos ya hechos siguen siendo gastos reales: se conservan, pero sin vínculo
+  Object.values(p.months).forEach((m) => m.exp.forEach((e) => { if (e.debt === id) { delete e.debt; delete e.pay; } }));
+  p.debts = (p.debts || []).filter((d) => d.id !== id);
+}
+function deleteDebtPayment(p, debtId, payId) {
+  const d = (p.debts || []).find((x) => x.id === debtId); if (!d) return;
+  const pay = d.pays.find((x) => x.id === payId);
+  if (pay && pay.expId && p.months[pay.month]) p.months[pay.month].exp = p.months[pay.month].exp.filter((e) => e.id !== pay.expId);
+  d.pays = d.pays.filter((x) => x.id !== payId);
+}
+function editDebt(id) {
+  const p = profile(); if (!p.debts) p.debts = [];
+  const d = id ? p.debts.find((x) => x.id === id) : null;
+  modal(`<h2>${esc(d ? t('editDebt') : t('addDebt'))}</h2>
+    <label class="field">${esc(t('debtName'))}<input name="name" class="input" maxlength="40" value="${esc(d ? d.name : '')}" placeholder="${esc(t('debtNamePh'))}" required></label>
+    <label class="field">${esc(t('debtTotal'))}<input name="total" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" value="${d ? plain(d.total) : ''}" placeholder="${esc(money(0))}" required></label>
+    <label class="field">${esc(t('debtCuota'))}<input name="cuota" class="input num" inputmode="${dec() ? 'decimal' : 'numeric'}" value="${d && d.cuota ? plain(d.cuota) : ''}" placeholder="${esc(money(0))}"></label>
+    <label class="field">${esc(t('debtAcc'))}<select name="acc" class="input">${accOptions(p, d ? d.acc : 'prio')}</select></label>
+    <label class="field">${esc(t('debtStart'))}<input name="start" type="month" class="input" value="${d ? d.start : S.month}"></label>
+    <div class="row"><button type="button" class="btn" data-act="modal-close" style="flex:1">${esc(t('cancel'))}</button><button class="btn primary" style="flex:1">${esc(t('save'))}</button></div>`,
+  (fd) => {
+    const name = String(fd.get('name') || '').trim(), total = parseMoney(fd.get('total'));
+    if (!name || !total) { toast(t('invalidAmount'), 'warn'); return true; }
+    const data = { name, total, cuota: parseMoney(fd.get('cuota')), acc: String(fd.get('acc')), start: /^\d{4}-\d{2}$/.test(String(fd.get('start'))) ? String(fd.get('start')) : S.month };
+    if (d) Object.assign(d, data); else p.debts.push({ id: uid(), pays: [], ...data });
+    save(); render(); toast(t('debtSaved'));
+  });
+}
+function payDebt(id, kind) {
+  const p = profile(), d = (p.debts || []).find((x) => x.id === id); if (!d) return;
+  const left = debtLeft(d), suggested = kind === 'cuota' ? Math.min(d.cuota || left, left) : '';
+  const defDate = S.month === monthKey(new Date()) ? todayISO() : S.month + '-01';
+  modal(`<h2>${esc(t(kind === 'cuota' ? 'payTitleCuota' : 'payTitleAbono', { n: d.name }))}</h2>
+    <p class="small muted">${esc(t('balanceLeft'))}: <b class="num">${money(left)}</b> · ${esc(monthLabel(S.month))}</p>
+    <label class="field">${esc(t('amount'))}<input name="amount" class="input big num" inputmode="${dec() ? 'decimal' : 'numeric'}" value="${suggested ? plain(suggested) : ''}" placeholder="${esc(money(0))}" required></label>
+    <label class="field">${esc(t('expenseDate'))}<input name="date" type="date" class="input" value="${defDate}" min="${S.month}-01" max="${S.month}-31"></label>
+    <label class="field">${esc(t('debtAcc'))}<select name="acc" class="input">${accOptions(p, d.acc)}</select></label>
+    <div class="set-row" style="border:0;padding:0"><span class="small">${esc(t('alsoExpense'))}</span><label class="switch"><input type="checkbox" name="asExp" checked aria-label="${esc(t('alsoExpense'))}"><span></span></label></div>
+    <div class="row"><button type="button" class="btn" data-act="modal-close" style="flex:1">${esc(t('cancel'))}</button><button class="btn primary" style="flex:1">${esc(t(kind === 'cuota' ? 'payCuota' : 'payAbono'))}</button></div>`,
+  (fd) => {
+    let amount = parseMoney(fd.get('amount'));
+    if (!amount) { toast(t('invalidAmount'), 'warn'); return true; }
+    if (amount > left) { amount = left; toast(t('capped', { r: money(left) }), 'warn'); }
+    let date = String(fd.get('date') || todayISO()); if (!date.startsWith(S.month)) date = S.month + '-01';
+    const pay = { id: uid(), amount, date, month: S.month, kind };
+    if (fd.get('asExp')) {
+      const acc = String(fd.get('acc')), m = getMonth(p, S.month);
+      const e = { id: uid(), acc, amount, desc: `${d.name} · ${t(kind)}`, date, debt: d.id, pay: pay.id };
+      m.exp.push(e); pay.expId = e.id;
+    }
+    d.pays.push(pay);
+    save(); render();
+    toast(debtLeft(d) <= 0 ? t('debtDone', { n: d.name }) : t('paymentAdded', { r: money(amount), n: d.name }));
+  });
+}
+function debtPayMenu(debtId, payId) {
+  const d = (profile().debts || []).find((x) => x.id === debtId), x = d && d.pays.find((v) => v.id === payId); if (!x) return;
+  modal(`<h2>${esc(t('paymentWhat'))}</h2><div class="exp" style="border:0"><div class="stack" style="gap:0"><b>${esc(d.name)} · ${esc(t(x.kind))}</b><span class="small muted">${esc(x.date)}</span></div><b class="num">${money(x.amount)}</b></div>
+    <p class="small muted">${esc(t('payDelNote'))}</p>
+    <button type="button" class="btn block danger" data-act="debt-pay-del" data-id="${d.id}" data-pay="${x.id}">${icon('trash')}${esc(t('delete'))}</button>
+    <button type="button" class="btn ghost block" data-act="modal-close">${esc(t('cancel'))}</button>`, () => {});
+}
+function viewDebts() {
+  const p = profile(), debts = p.debts || [];
+  const active = debts.filter((d) => debtLeft(d) > 0);
+  const totalLeft = roundM(debts.reduce((a, d) => a + debtLeft(d), 0));
+  const paidMonth = roundM(debts.reduce((a, d) => a + d.pays.filter((x) => x.month === S.month).reduce((b, x) => b + x.amount, 0), 0));
+  const due = debtsDue(p, S.month), dueAmt = roundM(due.reduce((a, d) => a + Math.min(d.cuota, debtLeft(d)), 0));
+  const card = (d) => {
+    const left = debtLeft(d), paid = debtPaid(d), done = left <= 0;
+    const pct = d.total ? Math.min(100, (paid / d.total) * 100) : 0;
+    const monthsLeft = d.cuota > 0 && left > 0 ? Math.ceil(left / d.cuota) : 0;
+    const firstDue = S.month < d.start ? d.start : cuotaPaid(d, S.month) ? shiftMonth(S.month, 1) : S.month;
+    const endKey = monthsLeft ? shiftMonth(firstDue, monthsLeft - 1) : null;
+    const status = done ? `<span class="badge ok">${esc(t('debtPaidOff'))}</span>`
+      : cuotaDue(d, S.month) ? `<span class="badge warn">${esc(t('duePending'))}</span>`
+      : d.cuota > 0 && cuotaPaid(d, S.month) ? `<span class="badge ok">✓ ${esc(t('cuota'))}</span>` : '';
+    const pays = d.pays.slice().sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id));
+    return `<section class="card">
+      <div class="card-head"><span class="acc-title"><span class="name">${esc(d.name)}</span>${status}</span>
+        <span class="row" style="gap:0"><button class="icon-btn" data-act="debt-edit" data-id="${d.id}" aria-label="${esc(t('editDebt'))}">${icon('pencil')}</button><button class="icon-btn" data-act="debt-del" data-id="${d.id}" aria-label="${esc(t('delete'))}">${icon('trash')}</button></span></div>
+      <div class="row between"><span class="small muted">${esc(t('balanceLeft'))}</span><b class="num" style="font-size:1.4rem">${money(left)}</b></div>
+      <div class="bar"><i style="width:${pct}%;background:var(--ok)"></i></div>
+      <div class="row between small"><span class="muted num">${esc(t('paidOf', { a: money(paid), b: money(d.total) }))}</span><b class="num">${fmtPct(pct)}%</b></div>
+      ${d.cuota > 0 ? `<div class="small muted">${esc(t('cuota'))}: <b class="num">${money(d.cuota)}</b>${monthsLeft ? ` · ${esc(t('monthsLeft', { n: monthsLeft, m: monthLabel(endKey) }))}` : ''}</div>` : ''}
+      ${done ? '' : `<div class="row wrap">
+        ${cuotaDue(d, S.month) ? `<button class="btn primary" data-act="debt-cuota" data-id="${d.id}">${esc(t('payCuota'))} · ${money(Math.min(d.cuota, left))}</button>` : ''}
+        <button class="btn" data-act="debt-abono" data-id="${d.id}">${icon('plus')}${esc(t('payAbono'))}</button></div>`}
+      ${pays.length ? `<button class="btn ghost sm" data-act="debt-toggle" data-id="${d.id}">${esc(t('payments'))} (${pays.length}) ${ui.debtOpen === d.id ? '▲' : '▼'}</button>
+        ${ui.debtOpen === d.id ? `<div>${pays.map((x) => `<div class="exp tappable" data-act="debt-pay-menu" data-id="${d.id}" data-pay="${x.id}" role="button" tabindex="0"><div class="stack" style="gap:0"><b>${esc(t(x.kind))}</b><span class="small muted">${esc(x.date)}</span></div><b class="num">−${money(x.amount)}</b><span class="icon-btn" aria-hidden="true">${icon('more')}</span></div>`).join('')}</div>` : ''}` : ''}
+    </section>`;
+  };
+  return `
+  <section class="card">
+    <div class="card-head"><h2>${esc(t('debtsTitle'))}</h2><button class="btn sm primary" data-act="debt-add">${icon('plus')}${esc(t('addDebt'))}</button></div>
+    <div class="stats">
+      <div class="stat"><div class="label">${esc(t('debtTotalLeft'))}</div><div class="value num">${money(totalLeft)}</div></div>
+      <div class="stat"><div class="label">${esc(t('paidThisMonth'))}</div><div class="value num">${money(paidMonth)}</div></div>
+      <div class="stat"><div class="label">${esc(t('duesPending'))}</div><div class="value num ${due.length ? 'neg' : ''}">${due.length ? money(dueAmt) : '✓'}</div></div>
+    </div>
+    <p class="small muted">${esc(t('debtsHelp'))}</p>
+  </section>
+  ${debts.length ? `<div class="grid-2">${[...active, ...debts.filter((d) => debtLeft(d) <= 0)].map(card).join('')}</div>` : `<section class="card"><p class="muted">${esc(t('noDebts'))}</p></section>`}`;
+}
+
+// ---------- Programado vs real ----------
+function shortAcc(id, p) {
+  const custom = p && p.names[id] && p.names[id].name;
+  if (custom) return custom.length > 9 ? custom.slice(0, 8) + '…' : custom;
+  return t('sh_' + id);
+}
+function planVsReal(r, p) {
+  const execPct = r.assigned > 0 ? Math.round((r.spent / r.assigned) * 100) : 0;
+  return `<section class="card"><div class="card-head"><h2>${esc(t('planVsReal'))}</h2><span class="small muted">${esc(t('executed', { p: execPct }))}</span></div>
+    ${barChart(TOPS.map((id) => ({ label: shortAcc(id, p), values: [r.top[id].amt, r.top[id].spent] })), [{ name: t('planned'), color: 'var(--primary)' }, { name: t('real'), color: '#E39B12' }])}
+  </section>`;
 }
 
 // ---------- Historial ----------
@@ -761,10 +960,16 @@ function reportRows() {
       m.exp.slice().sort((a, b) => a.date.localeCompare(b.date)).forEach((e) => expenses.push([p.name, k, e.date, accName(e.acc, p), e.desc || '', e.amount]));
     });
   });
-  return { summary, expenses, history, extras };
+  const debts = [[L('member'), L('debtWord'), L('debtTotal'), L('cuota'), L('paidThisTotal'), L('balanceLeft')]];
+  const debtPays = [[L('member'), L('debtWord'), L('month'), L('expenseDate'), L('payType'), L('amount')]];
+  S.profiles.forEach((p) => (p.debts || []).forEach((d) => {
+    debts.push([p.name, d.name, d.total, d.cuota || 0, debtPaid(d), debtLeft(d)]);
+    d.pays.slice().sort((a, b) => a.date.localeCompare(b.date)).forEach((x) => debtPays.push([p.name, d.name, x.month, x.date, t(x.kind), x.amount]));
+  }));
+  return { summary, expenses, history, extras, debts, debtPays };
 }
 async function exportExcel() {
-  const { summary, expenses, history, extras } = reportRows();
+  const { summary, expenses, history, extras, debts, debtPays } = reportRows();
   const fname = 'mis-6-cuentas-' + S.month;
   try {
     const X = await loadXLSX();
@@ -775,11 +980,13 @@ async function exportExcel() {
     add(summary, es ? 'Cuentas' : 'Accounts', [16, 10, 40, 8, 14, 14, 14]);
     add(expenses, es ? 'Gastos' : 'Expenses', [16, 10, 12, 28, 30, 14]);
     add(extras, es ? 'Ingresos extraordinarios' : 'Extra income', [16, 10, 12, 30, 14]);
+    add(debts, es ? 'Deudas' : 'Debts', [16, 24, 14, 12, 14, 14]);
+    add(debtPays, es ? 'Pagos de deudas' : 'Debt payments', [16, 24, 10, 12, 10, 14]);
     X.writeFile(wb, fname + '.xlsx');
     toast(t('exported'));
   } catch (e) {
     // sin internet la primera vez: exporta CSV, que Excel también abre
-    const csv = [...history, [], ...summary, [], ...expenses, [], ...extras].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
+    const csv = [...history, [], ...summary, [], ...expenses, [], ...extras, [], ...debts, [], ...debtPays].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
     download(fname + '.csv', new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
     toast(t('exported') + ' (CSV)');
   }
@@ -814,10 +1021,26 @@ document.addEventListener('click', async (e) => {
     case 'apply-rule': getMonth(p, S.month).pct = { ...p.rule }; save(); render(); toast(t('ruleApplied')); break;
     case 'save-rule': p.rule = { ...getMonth(p, S.month).pct }; save(); render(); toast(t('ruleSaved')); break;
     case 'recommended': getMonth(p, S.month).pct = { ...RECOMMENDED }; save(); render(); toast(t('ruleApplied')); break;
-    case 'del-exp': { const m = getMonth(p, S.month); m.exp = m.exp.filter((x) => x.id !== el.dataset.id); save(); render(); toast(t('expenseDeleted')); break; }
+    case 'exp-menu': expenseMenu(el.dataset.id); break;
+    case 'exp-edit': closeModal(); editExpense(el.dataset.id); break;
+    case 'exp-del': closeModal(); deleteExpense(p, S.month, el.dataset.id); save(); render(); toast(t('expenseDeleted')); break;
+    case 'extra-menu': extraMenu(el.dataset.id); break;
+    case 'extra-edit': editExtra(el.dataset.id); break;
+    case 'extra-del': { const m = getMonth(p, S.month); m.extra = (m.extra || []).filter((x) => x.id !== el.dataset.id); save(); render(); openExtras(); toast(t('extraDeleted')); break; }
+    case 'debt-add': editDebt(null); break;
+    case 'debt-edit': editDebt(el.dataset.id); break;
+    case 'debt-del': {
+      const d = (p.debts || []).find((x) => x.id === el.dataset.id);
+      confirmModal(t('debtDeleteQ', { n: d.name }), t('delete'), () => { removeDebt(p, d.id); save(); render(); toast(t('debtDeleted')); });
+      break;
+    }
+    case 'debt-cuota': payDebt(el.dataset.id, 'cuota'); break;
+    case 'debt-abono': payDebt(el.dataset.id, 'abono'); break;
+    case 'debt-pay-menu': debtPayMenu(el.dataset.id, el.dataset.pay); break;
+    case 'debt-pay-del': { closeModal(); deleteDebtPayment(p, el.dataset.id, el.dataset.pay); save(); render(); toast(t('paymentDeleted')); break; }
+    case 'debt-toggle': ui.debtOpen = ui.debtOpen === el.dataset.id ? null : el.dataset.id; render(); break;
     case 'reminder-ok': S.settings.reminder.last = Date.now(); save(); ui.tab = 'expenses'; render(); break;
     case 'extras': openExtras(); break;
-    case 'del-extra': { const m = getMonth(p, S.month); m.extra = (m.extra || []).filter((x) => x.id !== el.dataset.id); save(); render(); openExtras(); break; }
     case 'install':
       if (installPrompt) { const ev = installPrompt; installPrompt = null; ev.prompt(); try { await ev.userChoice; } catch (err) {} render(); }
       break;
@@ -979,6 +1202,8 @@ function restoreFile(file) {
 }
 
 // Formatea montos al salir del campo (sin re-render)
+// filas tocables (gastos, ingresos, pagos) también se activan con Enter o Espacio
+document.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role="button"][data-act]')) { e.preventDefault(); e.target.click(); } });
 document.addEventListener('focusin', (e) => { if (e.target.matches('input[inputmode="numeric"], input[inputmode="decimal"]')) setTimeout(() => e.target.select && e.target.select(), 0); });
 
 // Recordatorio con notificación si toca al abrir
