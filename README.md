@@ -38,7 +38,16 @@ por ejemplo GitHub Pages o Netlify. Después:
 - **Android (Chrome):** menú ⋮ → *Instalar app* / *Agregar a pantalla principal*.
 - **iPhone (Safari):** botón Compartir → *Agregar a pantalla de inicio*.
 
-Al publicar cambios, sube el número de `VERSION` en `sw.js` para que los celulares descarguen la versión nueva.
+## Publicar una versión nueva (sin que nadie pierda datos)
+1. Sube `VERSION` en `sw.js` (por ejemplo `mis6cuentas-v6`) y `APP_VERSION` en `app.js` (por ejemplo `1.6`).
+2. Haz commit y push a `main`; GitHub Pages publica en uno o dos minutos.
+3. Quien ya tenga la app verá **"Hay una nueva versión de la app → Actualizar ahora"** (o puede ir a *Más → Buscar actualización*).
+
+Los datos de cada persona viven en su propio celular, separados del código, así que actualizar nunca los borra.
+Además, antes de cada actualización la app guarda una copia automática que se puede recuperar en *Más → Restaurar copia automática*.
+
+**Ojo en iPhone:** la app instalada en la pantalla de inicio y Safari guardan datos por separado.
+Para actualizar hay que abrir la app desde su ícono, no el enlace en Safari.
 
 ## Archivos
 - `index.html` – página principal

@@ -16,6 +16,8 @@ const MEMBER_COLORS = ['#0E7C66', '#3B6FE0', '#E0508A', '#E39B12', '#8B5CF6', '#
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'MXN', 'ARS', 'PEN', 'COP'];
 const ZERO_DEC = ['CLP', 'COP'];
 const KEY = 'mis6cuentas.v1';
+const BACKUP_KEY = 'mis6cuentas.v1.backup'; // copia automática antes de cada actualización
+const APP_VERSION = '1.5'; // súbela junto con VERSION en sw.js
 const PER_MEMBER = ['budget', 'expenses', 'debts']; // pestañas que se editan por miembro, no en la vista familiar
 
 // ---------- Estado ----------
@@ -30,7 +32,12 @@ function blankState() {
   };
 }
 function load() {
-  try { const raw = localStorage.getItem(KEY); if (raw) return Object.assign(blankState(), JSON.parse(raw)); } catch (e) {}
+  // los datos guardados se combinan con los valores por defecto: una versión nueva que agregue
+  // opciones nunca descarta lo que el usuario ya tenía
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) { const d = JSON.parse(raw), b = blankState(); return Object.assign(b, d, { settings: Object.assign(b.settings, d.settings) }); }
+  } catch (e) {}
   return blankState();
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('No se pudo guardar', 'bad'); } }
@@ -284,7 +291,7 @@ function renderNow() {
   if (S.active === 'family' && S.settings.mode !== 'family') S.active = S.profiles[0].id;
   if (isFamilyView() && PER_MEMBER.includes(ui.tab)) ui.tab = 'home';
   const views = { home: viewHome, budget: viewBudget, expenses: viewExpenses, debts: viewDebts, history: viewHistory, more: viewMore };
-  app.innerHTML = `<div class="shell">${topbar()}<main class="content" id="main">${views[ui.tab]()}</main>${nav()}</div>`;
+  app.innerHTML = `<div class="shell">${topbar()}<main class="content" id="main">${updateBanner()}${views[ui.tab]()}</main>${nav()}</div>`;
 }
 function topbar() {
   const prof = S.settings.mode === 'family'
@@ -419,6 +426,14 @@ const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.
 const isMobile = () => isIOS() || /android|mobile/i.test(navigator.userAgent);
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; if (S.settings.onboarded) deferRender(); else render(); });
 window.addEventListener('appinstalled', () => { installPrompt = null; toast(t('installed')); deferRender(); });
+function updateBanner() {
+  if (!updateReady) return '';
+  return `<div class="alert info update"><div class="stack" style="flex:1;gap:6px"><b>${esc(t('updateTitle'))}</b><span class="small">${esc(t('updateSafe'))}</span>
+    <div><button type="button" class="btn sm primary" data-act="update-now">${esc(t('updateNow'))}</button></div></div></div>`;
+}
+function autoBackup() {
+  try { const b = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); return b && b.data && Array.isArray(b.data.profiles) ? b : null; } catch (e) { return null; }
+}
 function installBanner(force) {
   if (isStandalone() || (!force && S.settings.installHide)) return '';
   let how = '';
@@ -818,8 +833,14 @@ function viewMore() {
         <button class="btn primary" data-act="excel">${esc(t('exportExcel'))}</button>
         <div class="row wrap"><button class="btn" data-act="backup">${esc(t('backup'))}</button><button class="btn" data-act="restore">${esc(t('restore'))}</button></div>
         <input type="file" id="restore-file" accept="application/json,.json" class="hidden">
+        ${autoBackup() ? `<button class="btn" data-act="restore-auto">${esc(t('restoreAuto', { d: new Date(autoBackup().at).toLocaleDateString(locale()) }))}</button>` : ''}
         <p class="small muted">${esc(t('about'))}</p>
         <button class="btn danger" data-act="wipe">${esc(t('wipe'))}</button>
+      </section>
+      <section class="card"><h2>${esc(t('updates'))}</h2>
+        <div class="set-row"><span>${esc(t('appVersion'))}</span><b>${esc(APP_VERSION)}</b></div>
+        ${updateReady ? `<button class="btn primary" data-act="update-now">${esc(t('updateNow'))}</button>` : `<button class="btn" data-act="update-check">${esc(t('checkUpdate'))}</button>`}
+        <p class="small muted">${esc(t('updateSafe'))}</p>
       </section>
     </div>
   </div>`;
@@ -908,7 +929,7 @@ function viewTutorial() {
 // ---------- Bloqueo ----------
 function viewLock() {
   // antes de pedir la contraseña, sugiere instalar la app si se abrió desde el navegador
-  return `<div class="flow"><form class="flow-card card" data-form="unlock">${installBanner(false)}${LOGO}<h1>${esc(t('locked'))}</h1>
+  return `<div class="flow"><form class="flow-card card" data-form="unlock">${updateBanner()}${installBanner(false)}${LOGO}<h1>${esc(t('locked'))}</h1>
     <input class="input" type="password" id="lock-pw" autocomplete="current-password" aria-label="${esc(t('password'))}">
     <p class="small neg hidden" id="lock-err">${esc(t('wrongPw'))}</p>
     <button class="btn primary block" type="submit">${icon('lock')}${esc(t('unlock'))}</button>
@@ -1106,11 +1127,22 @@ document.addEventListener('click', async (e) => {
     case 'backup': download('respaldo-mis-6-cuentas-' + todayISO() + '.json', new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' })); break;
     case 'restore': $('#restore-file').click(); break;
     case 'wipe': confirmModal(t('wipeConfirm'), t('wipe'), wipeAll); break;
+    case 'update-now': applyUpdate(); break;
+    case 'update-check': checkUpdate(); break;
+    case 'restore-auto': {
+      const b = autoBackup(); if (!b) break;
+      confirmModal(t('restoreAutoQ', { d: new Date(b.at).toLocaleString(locale()) }), t('restore'), () => {
+        S = Object.assign(blankState(), b.data, { settings: Object.assign(blankState().settings, b.data.settings) });
+        ui.unlocked = true; save(); render(); toast(t('restored'));
+      }, false);
+      break;
+    }
     case 'modal-close': if (e.target === el || el.tagName === 'BUTTON') closeModal(); break;
   }
 });
 function wipeAll() {
-  try { localStorage.removeItem(KEY); } catch (e) {}
+  // borra también la copia automática: si no, tras "olvidé mi contraseña" se podrían recuperar los datos sin ella
+  try { localStorage.removeItem(KEY); localStorage.removeItem(BACKUP_KEY); } catch (e) {}
   S = blankState(); ui = { tab: 'home', unlocked: false, onb: { step: 0, members: [''], mode: 'individual', income: '', pw: '' }, tut: null, expFilter: 'all' };
   closeModal(); render();
 }
@@ -1214,9 +1246,39 @@ function maybeNotify() {
 }
 
 // Service worker (solo en http/https)
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+// ---------- Actualizaciones sin perder datos ----------
+let swReg = null, updateReady = false, reloading = false;
+function markUpdate() { if (!updateReady) { updateReady = true; deferRender(); } }
+function watchWorker(w) { if (w) w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) markUpdate(); }); }
+function backupBeforeUpdate() {
+  try { localStorage.setItem(BACKUP_KEY, JSON.stringify({ at: Date.now(), ver: APP_VERSION, data: S })); } catch (e) {}
 }
+function applyUpdate() {
+  save(); backupBeforeUpdate(); // copia de seguridad antes de cambiar de versión
+  if (swReg && swReg.waiting) swReg.waiting.postMessage({ type: 'SKIP_WAITING' }); // al activarse, recarga (controllerchange)
+  else location.reload();
+}
+async function checkUpdate() {
+  if (!swReg) { toast(t('upToDate', { v: APP_VERSION })); return; }
+  toast(t('checking'));
+  try { await swReg.update(); } catch (e) {}
+  setTimeout(() => { if (updateReady || swReg.waiting) markUpdate(); else toast(t('upToDate', { v: APP_VERSION })); }, 2500);
+}
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      swReg = reg;
+      if (reg.waiting && navigator.serviceWorker.controller) markUpdate();
+      watchWorker(reg.installing);
+      reg.addEventListener('updatefound', () => watchWorker(reg.installing));
+      setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+    }).catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloading) { reloading = true; location.reload(); } });
+  });
+}
+// pide al navegador no borrar los datos de la app por falta de espacio
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
 render();
 maybeNotify();
