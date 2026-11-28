@@ -1,10 +1,13 @@
 ﻿// Service worker: permite usar la app sin internet y avisa cuando hay una versión nueva.
 // Cambia VERSION (y APP_VERSION en app.js) cada vez que publiques cambios.
 // Los datos del usuario viven en localStorage, no en esta caché: actualizar nunca los borra.
-const VERSION = 'mis6cuentas-v5';
+const VERSION = 'mis6cuentas-v6';
 const SHELL = ['./', './index.html', './styles.css', './i18n.js', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
-const XLSX_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+// librerías externas que se guardan en caché tras usarlas una vez (Excel y PDF funcionan luego sin internet)
+const LIBS = ['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+  'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+  'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js'];
 
 self.addEventListener('install', (e) => {
   // no se activa sola: espera a que el usuario toque "Actualizar ahora"
@@ -20,7 +23,7 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.origin !== location.origin && req.url !== XLSX_URL) return;
+  if (url.origin !== location.origin && !LIBS.includes(req.url)) return;
   // red primero (la versión más nueva si hay internet); caché si no hay conexión
   e.respondWith(
     fetch(req).then((res) => {

@@ -17,7 +17,7 @@ const CURRENCIES = ['CLP', 'USD', 'EUR', 'MXN', 'ARS', 'PEN', 'COP'];
 const ZERO_DEC = ['CLP', 'COP'];
 const KEY = 'mis6cuentas.v1';
 const BACKUP_KEY = 'mis6cuentas.v1.backup'; // copia automática antes de cada actualización
-const APP_VERSION = '1.5'; // súbela junto con VERSION en sw.js
+const APP_VERSION = '1.6'; // súbela junto con VERSION en sw.js
 const PER_MEMBER = ['budget', 'expenses', 'debts']; // pestañas que se editan por miembro, no en la vista familiar
 
 // ---------- Estado ----------
@@ -759,7 +759,8 @@ function viewHistory() {
       ${TOPS.map((id) => { const a = prev.r.top[id].spent, b = cur.r.top[id].spent, d = b - a; return `<tr><td><span class="row"><i class="dot" style="background:${COLORS[id]}"></i>${esc(fam ? t('acc_' + id) : accName(id, profs[0]))}</span></td><td class="num">${money(a)}</td><td class="num">${money(b)}</td><td class="num ${d > 0 ? 'neg' : d < 0 ? 'pos' : ''}">${d > 0 ? '+' : ''}${money(d)}</td></tr>`; }).join('')}
     </tbody></table></div>`;
   }
-  return `<section class="card"><h2>${esc(t('historyTitle'))} · ${esc(t('incomeVsSpent'))}</h2>${chart}</section>
+  return `<section class="card"><div class="card-head"><h2>${esc(t('pdfMonthReport'))}</h2><button class="btn sm primary" data-act="pdf">PDF</button></div><p class="small muted">${esc(t('pdfHint'))}</p></section>
+    <section class="card"><h2>${esc(t('historyTitle'))} · ${esc(t('incomeVsSpent'))}</h2>${chart}</section>
     <div class="grid-2"><section class="card">${table}</section><section class="card"><h2>${esc(t('vsPrev'))}</h2>${cmp}</section></div>`;
 }
 
@@ -830,7 +831,9 @@ function viewMore() {
       </section>
       ${isStandalone() ? '' : `<section class="card"><h2>${esc(t('installSection'))}</h2>${installBanner(true)}</section>`}
       <section class="card"><h2>${esc(t('data'))}</h2>
-        <button class="btn primary" data-act="excel">${esc(t('exportExcel'))}</button>
+        <button class="btn primary" data-act="pdf">${esc(t('pdfReport'))}</button>
+        <p class="small muted">${esc(t('pdfHint'))}</p>
+        <button class="btn" data-act="excel">${esc(t('exportExcel'))}</button>
         <div class="row wrap"><button class="btn" data-act="backup">${esc(t('backup'))}</button><button class="btn" data-act="restore">${esc(t('restore'))}</button></div>
         <input type="file" id="restore-file" accept="application/json,.json" class="hidden">
         ${autoBackup() ? `<button class="btn" data-act="restore-auto">${esc(t('restoreAuto', { d: new Date(autoBackup().at).toLocaleDateString(locale()) }))}</button>` : ''}
@@ -965,6 +968,266 @@ function loadXLSX() {
     s.onload = () => res(window.XLSX); s.onerror = rej; document.head.appendChild(s);
   });
 }
+// ---------- Reporte PDF ----------
+const JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+const AUTOTABLE_URL = 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js';
+function loadScript(src) {
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+}
+async function loadPDF() {
+  if (!(window.jspdf && window.jspdf.jsPDF)) await loadScript(JSPDF_URL);
+  if (!window.jspdf.jsPDF.API.autoTable) await loadScript(AUTOTABLE_URL);
+  return window.jspdf.jsPDF;
+}
+// Reúne los números del mes (de un miembro o de toda la familia)
+function pdfData() {
+  const fam = isFamilyView(), key = S.month, prevKey = shiftMonth(key, -1);
+  const profs = fam ? S.profiles : [profile()];
+  const nameOf = (id, p) => (fam ? t('acc_' + id) : accName(id, p));
+  let r, prev = null;
+  if (fam) {
+    r = familyCalc(key).agg;
+    r.base = profs.reduce((a, p) => a + ((peekMonth(p, key) || {}).income || 0), 0);
+    r.extra = profs.reduce((a, p) => a + (peekMonth(p, key) ? extraSum(peekMonth(p, key)) : 0), 0);
+    LEAVES.forEach((k) => (r.leaf[k].pct = r.income ? (r.leaf[k].amt / r.income) * 100 : 0));
+    const pa = familyCalc(prevKey).agg; if (pa.income || pa.spent) prev = pa;
+  } else {
+    const p = profs[0]; r = calc(p, getMonth(p, key));
+    const pm = peekMonth(p, prevKey); if (hasData(pm)) prev = calc(p, pm);
+  }
+  const expenses = [], extras = [], debts = [];
+  profs.forEach((p) => {
+    const m = peekMonth(p, key);
+    if (m) {
+      m.exp.forEach((e) => expenses.push({ ...e, accLabel: nameOf(e.acc, p), member: p.name }));
+      (m.extra || []).forEach((x) => extras.push({ ...x, member: p.name }));
+    }
+    (p.debts || []).forEach((d) => debts.push({ member: p.name, name: d.name, total: d.total, paid: debtPaid(d), left: debtLeft(d), cuota: d.cuota || 0,
+      month: roundM(d.pays.filter((x) => x.month === key).reduce((a, x) => a + x.amount, 0)), due: cuotaDue(d, key) }));
+  });
+  expenses.sort((a, b) => a.date.localeCompare(b.date));
+  return { fam, key, prevKey, r, prev, expenses, extras, debts, title: fam ? t('family') : profs[0].name,
+    nameOf: (id) => nameOf(id, profs[0]), recs: fam ? [] : recommendations(profs[0]) };
+}
+async function exportPDF() {
+  toast(t('pdfMaking'));
+  let JsPDF;
+  try { JsPDF = await loadPDF(); } catch (e) { toast(t('pdfError'), 'bad'); return; }
+  const D = pdfData(), r = D.r;
+  const doc = new JsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210, M = 14, CW = W - 2 * M;
+  const txt = (s) => String(s ?? '').replace(/[^\x00-\xFF€]/g, ''); // las fuentes del PDF no traen emojis ni símbolos raros
+  const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const GREEN = [14, 124, 102], INK = [20, 24, 31], MUTED = [90, 100, 115], RED = [198, 47, 47], LINE = [223, 227, 232], SOFT = [244, 246, 248];
+  let y = 0;
+  const ensure = (h) => { if (y + h > 282) { doc.addPage(); y = 18; } };
+  const section = (title) => {
+    ensure(34); y += 4; // el título nunca queda solo al pie de una página
+    doc.setFillColor(...GREEN); doc.rect(M, y - 4, 1.6, 6, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12.5); doc.setTextColor(...INK); doc.text(txt(title), M + 4, y + 0.6);
+    y += 6;
+  };
+  const table = (opts) => {
+    // títulos y totales alineados igual que su columna (los montos a la derecha)
+    const cs = opts.columnStyles || {}, userCb = opts.didParseCell;
+    opts.didParseCell = (h) => {
+      if (h.section !== 'body' && cs[h.column.index] && cs[h.column.index].halign) h.cell.styles.halign = cs[h.column.index].halign;
+      if (userCb) userCb(h);
+    };
+    // si la tabla cabe en una página pero no en el espacio que queda, empieza en la página siguiente
+    const est = 14 + ((opts.body || []).length + (opts.foot ? 1 : 0)) * 7;
+    if (est < 240) ensure(est);
+    doc.autoTable(Object.assign({
+      startY: y, margin: { left: M, right: M }, theme: 'striped',
+      styles: { font: 'helvetica', fontSize: 9, cellPadding: 2, textColor: INK, lineColor: LINE },
+      headStyles: { fillColor: GREEN, textColor: 255, fontStyle: 'bold' },
+      footStyles: { fillColor: [227, 243, 239], textColor: INK, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: SOFT },
+    }, opts));
+    y = doc.lastAutoTable.finalY + 6;
+  };
+  const right = { halign: 'right' };
+
+  // Encabezado
+  doc.setFillColor(...GREEN); doc.rect(0, 0, W, 34, 'F');
+  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(19);
+  doc.text(txt(t('pdfTitle')), M, 15);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11);
+  doc.text(txt(`${monthLabel(D.key)}  ·  ${D.title}`), M, 23);
+  doc.setFontSize(8.5);
+  doc.text(txt(t('pdfGenerated', { d: new Date().toLocaleDateString(locale(), { day: 'numeric', month: 'long', year: 'numeric' }) })), M, 29.5);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.text(txt(t('appName')), W - M, 15, { align: 'right' });
+  y = 42;
+
+  // Indicadores clave
+  const debtLeftTotal = D.debts.reduce((a, d) => a + d.left, 0);
+  const kpis = [
+    [t('kpiIncome'), money(r.income), GREEN],
+    [t('kpiSpent'), money(r.spent), [227, 155, 18]],
+    [t('kpiBalance'), money(r.available), r.available < 0 ? RED : GREEN],
+    [t('kpiDebts'), money(debtLeftTotal), debtLeftTotal > 0 ? RED : MUTED],
+  ];
+  const kw = (CW - 3 * 4) / 4;
+  kpis.forEach(([label, val, col], i) => {
+    const x = M + i * (kw + 4);
+    doc.setFillColor(...SOFT); doc.setDrawColor(...LINE); doc.roundedRect(x, y, kw, 22, 2.5, 2.5, 'FD');
+    doc.setFillColor(...col); doc.rect(x, y + 3, 1.2, 16, 'F');
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...MUTED); doc.text(txt(label), x + 4, y + 8);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...col); doc.text(txt(val), x + 4, y + 16);
+  });
+  y += 28;
+  // frase resumen
+  const usedPct = r.assigned > 0 ? Math.round((r.spent / r.assigned) * 100) : 0;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(...MUTED);
+  doc.text(doc.splitTextToSize(txt(t('pdfSummary', { s: money(r.spent), p: usedPct, b: money(r.available) })), CW), M, y);
+  y += 8;
+
+  // Familia: resumen por miembro
+  if (D.fam) {
+    section(t('secMembers'));
+    const per = familyCalc(D.key).per;
+    table({ head: [[t('member'), t('kpiIncome'), t('kpiSpent'), t('kpiBalance')].map(txt)],
+      body: per.map(({ p, r: pr }) => [p.name, money(pr ? pr.income : 0), money(pr ? pr.spent : 0), money(pr ? pr.available : 0)].map(txt)),
+      foot: [[t('total'), money(r.income), money(r.spent), money(r.available)].map(txt)], columnStyles: { 1: right, 2: right, 3: right },
+      didParseCell: (h) => { if (h.section === 'body' && h.column.index === 3 && String(h.cell.raw).startsWith('-')) h.cell.styles.textColor = RED; } });
+  }
+
+  // Resumen de ingresos
+  section(t('secIncome'));
+  const incomeRows = [[t('incomeFixed'), '', money(r.base)]];
+  D.extras.sort((a, b) => a.date.localeCompare(b.date)).forEach((x) => incomeRows.push([`${t('extraIncome')}: ${x.desc || '-'}${D.fam ? ' (' + x.member + ')' : ''}`, x.date, money(x.amount)]));
+  table({ head: [[t('pdfConcept'), t('expenseDate'), t('amount')]], body: incomeRows.map((row) => row.map(txt)),
+    foot: [[t('incomeTotal'), '', money(r.income)]].map((row) => row.map(txt)), columnStyles: { 1: { cellWidth: 26 }, 2: right } });
+
+  // Distribución del ingreso: barra 100% apilada
+  if (r.income > 0) {
+    section(t('secDistribution'));
+    ensure(22);
+    let x = M;
+    TOPS.forEach((id) => {
+      const w = (r.top[id].amt / r.income) * CW; if (w <= 0) return;
+      doc.setFillColor(...rgb(COLORS[id])); doc.rect(x, y, w, 7, 'F'); x += w;
+    });
+    y += 11;
+    const colW = CW / 3;
+    TOPS.forEach((id, i) => {
+      const cx = M + (i % 3) * colW, cy = y + Math.floor(i / 3) * 6;
+      doc.setFillColor(...rgb(COLORS[id])); doc.rect(cx, cy - 2.6, 3, 3, 'F');
+      doc.setFontSize(8.5); doc.setTextColor(...INK); doc.setFont('helvetica', 'normal');
+      doc.text(txt(`${D.nameOf(id)}  ${fmtPct(r.top[id].pct)}%`), cx + 4.5, cy);
+    });
+    y += 14;
+  }
+
+  // Programado vs gastado: barras por cuenta (el bloque completo va en una sola página)
+  ensure(6 * 10.5 + 26);
+  section(t('secAccounts'));
+  const maxV = Math.max(1, ...TOPS.map((id) => Math.max(r.top[id].amt, r.top[id].spent)));
+  const labW = 48, barW = CW - labW - 48;
+  TOPS.forEach((id) => {
+    ensure(11);
+    const o = r.top[id], over = o.spent > o.amt;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...INK);
+    doc.text(txt(D.nameOf(id)), M, y + 3.2, { maxWidth: labW - 2 });
+    doc.setFillColor(...SOFT); doc.rect(M + labW, y, barW, 3.4, 'F');
+    doc.setFillColor(...rgb(COLORS[id])); doc.rect(M + labW, y, (o.amt / maxV) * barW, 3.4, 'F');
+    doc.setFillColor(...(over ? RED : [227, 155, 18])); doc.rect(M + labW, y + 4.2, Math.max(0.01, (o.spent / maxV) * barW), 3.4, 'F');
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...MUTED);
+    doc.text(txt(money(o.amt)), W - M, y + 3, { align: 'right' });
+    doc.setTextColor(...(over ? RED : MUTED)); doc.text(txt(money(o.spent)), W - M, y + 7.2, { align: 'right' });
+    y += 10.5;
+  });
+  doc.setFontSize(8); doc.setTextColor(...MUTED);
+  doc.setFillColor(...GREEN); doc.rect(M + labW, y, 3, 3, 'F'); doc.text(txt(t('planned')), M + labW + 4.5, y + 2.6);
+  doc.setFillColor(227, 155, 18); doc.rect(M + labW + 32, y, 3, 3, 'F'); doc.text(txt(t('real')), M + labW + 36.5, y + 2.6);
+  y += 8;
+
+  // Tabla por cuenta (detalle con subcuentas)
+  const accRows = [];
+  TOPS.forEach((id) => {
+    const o = r.top[id];
+    accRows.push([D.nameOf(id), fmtPct(o.pct) + '%', money(o.amt), money(o.spent), money(o.left), o.amt > 0 ? Math.round((o.spent / o.amt) * 100) + '%' : '-']);
+    if (id === 'c1') C1_KIDS.forEach((k) => { const l = r.leaf[k]; accRows.push(['   ' + D.nameOf(k), fmtPct(l.pct) + '%', money(l.amt), money(l.spent), money(l.left), l.amt > 0 ? Math.round((l.spent / l.amt) * 100) + '%' : '-']); });
+  });
+  table({ head: [[t('expenseAcc'), '%', t('planned'), t('spent'), t('remaining'), t('used')]].map((row) => row.map(txt)), body: accRows.map((row) => row.map(txt)),
+    foot: [[t('total'), fmtPct(r.pctSum || (r.income ? (r.assigned / r.income) * 100 : 0)) + '%', money(r.assigned), money(r.spent), money(roundM(r.assigned - r.spent)), r.assigned ? usedPct + '%' : '-']].map((row) => row.map(txt)),
+    columnStyles: { 1: right, 2: right, 3: right, 4: right, 5: right },
+    didParseCell: (h) => {
+      if (h.section === 'body' && String(h.row.raw[0]).startsWith('   ')) { h.cell.styles.fontSize = 8.2; h.cell.styles.textColor = MUTED; }
+      if (h.section === 'body' && h.column.index === 4 && String(h.cell.raw).startsWith('-')) { h.cell.styles.textColor = RED; h.cell.styles.fontStyle = 'bold'; }
+    } });
+
+  // Detalle de gastos
+  section(t('secExpenses'));
+  if (D.expenses.length) {
+    const byAcc = {}; D.expenses.forEach((e) => (byAcc[e.accLabel] = (byAcc[e.accLabel] || 0) + e.amount));
+    const head = D.fam ? [t('expenseDate'), t('member'), t('expenseAcc'), t('expenseDesc'), t('amount')] : [t('expenseDate'), t('expenseAcc'), t('expenseDesc'), t('amount')];
+    const body = D.expenses.map((e) => (D.fam ? [e.date, e.member, e.accLabel, e.desc || '-', money(e.amount)] : [e.date, e.accLabel, e.desc || '-', money(e.amount)]));
+    const n = head.length - 1;
+    table({ head: [head.map(txt)], body: body.map((row) => row.map(txt)),
+      foot: [[...Array(n - 1).fill(''), t('kpiSpent'), money(r.spent)].map(txt)], columnStyles: { 0: { cellWidth: 22 }, [n]: right } });
+    const top = Object.entries(byAcc).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    doc.setFontSize(9); doc.setTextColor(...MUTED); doc.setFont('helvetica', 'normal');
+    ensure(8);
+    doc.text(doc.splitTextToSize(txt(t('pdfTopSpend', { l: top.map(([a, v]) => `${a} (${money(v)})`).join(', ') })), CW), M, y - 1);
+    y += 6;
+  } else { doc.setFontSize(9.5); doc.setTextColor(...MUTED); doc.text(txt(t('noExpenses')), M, y); y += 8; }
+
+  // Deudas
+  if (D.debts.length) {
+    section(t('secDebts'));
+    const head = [...(D.fam ? [t('member')] : []), t('debtWord'), t('debtTotal'), t('paidThisTotal'), t('balanceLeft'), t('cuota'), t('paidThisMonth'), t('status')];
+    const body = D.debts.map((d) => [...(D.fam ? [d.member] : []), d.name, money(d.total), money(d.paid), money(d.left), d.cuota ? money(d.cuota) : '-', money(d.month),
+      d.left <= 0 ? t('debtPaidOff') : d.due ? t('duePending') : t('pdfUpToDate')]);
+    const off = D.fam ? 1 : 0, cs = {}; [1, 2, 3, 4, 5].forEach((i) => (cs[i + off] = right));
+    table({ head: [head.map(txt)], body: body.map((row) => row.map(txt)), columnStyles: cs, styles: { font: 'helvetica', fontSize: 8.3, cellPadding: 1.8, textColor: INK },
+      foot: [[...(D.fam ? [''] : []), t('total'), money(D.debts.reduce((a, d) => a + d.total, 0)), money(D.debts.reduce((a, d) => a + d.paid, 0)), money(debtLeftTotal), '', money(D.debts.reduce((a, d) => a + d.month, 0)), ''].map(txt)],
+      didParseCell: (h) => { if (h.section === 'body' && h.column.index === head.length - 1) h.cell.styles.textColor = String(h.cell.raw) === txt(t('duePending')) ? RED : GREEN; } });
+  }
+
+  // Comparación con el mes anterior
+  section(t('secCompare'));
+  if (D.prev) {
+    const row = (label, a, b, goodUp) => { const d = roundM(b - a); return [label, money(a), money(b), (d > 0 ? '+' : '') + money(d), goodUp === null ? '' : (d === 0 ? '=' : (d > 0) === goodUp ? 'ok' : 'warn')]; };
+    const rows = [row(t('kpiIncome'), D.prev.income, r.income, true), row(t('kpiSpent'), D.prev.spent, r.spent, false), row(t('kpiBalance'), D.prev.available, r.available, true)];
+    table({ head: [[t('pdfConcept'), monthLabel(D.prevKey), monthLabel(D.key), t('variation')].map(txt)], body: rows.map((x) => x.slice(0, 4).map(txt)),
+      columnStyles: { 1: right, 2: right, 3: right },
+      didParseCell: (h) => { if (h.section === 'body' && h.column.index === 3) { const k = rows[h.row.index][4]; if (k === 'ok') h.cell.styles.textColor = GREEN; if (k === 'warn') h.cell.styles.textColor = RED; } } });
+  } else { doc.setFontSize(9.5); doc.setTextColor(...MUTED); doc.text(txt(t('noPrev')), M, y); y += 8; }
+
+  // Observaciones
+  if (D.recs.length) {
+    section(t('secNotes'));
+    y += 2;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(...INK);
+    D.recs.forEach((rec) => {
+      const lines = doc.splitTextToSize(txt(rec), CW - 6); ensure(lines.length * 4.6 + 2);
+      doc.setFillColor(...GREEN); doc.circle(M + 1.3, y - 1.1, 0.9, 'F');
+      doc.text(lines, M + 5, y); y += lines.length * 4.6 + 1.6;
+    });
+  }
+
+  // Pie de página en todas las hojas
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(...LINE); doc.line(M, 287, W - M, 287);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...MUTED);
+    doc.text(txt(t('pdfFooter', { m: monthLabel(D.key) })), M, 291.5);
+    doc.text(txt(t('pdfPage', { a: i, b: pages })), W - M, 291.5, { align: 'right' });
+  }
+
+  const fname = `reporte-${D.key}-${D.title}`.toLowerCase().normalize('NFD').replace(/[^\w-]+/g, '-') + '.pdf';
+  const blob = doc.output('blob');
+  // en el celular abre "Compartir" (WhatsApp, correo…); si no se puede, descarga el archivo
+  try {
+    const file = new File([blob], fname, { type: 'application/pdf' });
+    if (isMobile() && navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: t('pdfTitle') }); toast(t('pdfDone')); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  download(fname, blob);
+  toast(t('pdfDone'));
+}
+
 function reportRows() {
   const L = (k) => t(k);
   const summary = [[L('member'), L('month'), L('expenseAcc'), '%', L('assigned'), L('spent'), L('remaining')]];
@@ -1123,6 +1386,7 @@ document.addEventListener('click', async (e) => {
       break;
     case 'forgot': confirmModal(t('forgotMsg') + ' ' + t('wipeConfirm'), t('wipe'), wipeAll); break;
     case 'excel': exportExcel(); break;
+    case 'pdf': exportPDF(); break;
     case 'ics': exportICS(); break;
     case 'backup': download('respaldo-mis-6-cuentas-' + todayISO() + '.json', new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' })); break;
     case 'restore': $('#restore-file').click(); break;
