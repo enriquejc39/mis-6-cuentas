@@ -1,7 +1,7 @@
 ﻿// Service worker: permite usar la app sin internet y avisa cuando hay una versión nueva.
 // Cambia VERSION (y APP_VERSION en app.js) cada vez que publiques cambios.
 // Los datos del usuario viven en localStorage, no en esta caché: actualizar nunca los borra.
-const VERSION = 'mis6cuentas-v6';
+const VERSION = 'mis6cuentas-v7';
 const SHELL = ['./', './index.html', './styles.css', './i18n.js', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 // librerías externas que se guardan en caché tras usarlas una vez (Excel y PDF funcionan luego sin internet)

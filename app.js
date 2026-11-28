@@ -17,7 +17,7 @@ const CURRENCIES = ['CLP', 'USD', 'EUR', 'MXN', 'ARS', 'PEN', 'COP'];
 const ZERO_DEC = ['CLP', 'COP'];
 const KEY = 'mis6cuentas.v1';
 const BACKUP_KEY = 'mis6cuentas.v1.backup'; // copia automática antes de cada actualización
-const APP_VERSION = '1.6'; // súbela junto con VERSION en sw.js
+const APP_VERSION = '1.7'; // súbela junto con VERSION en sw.js
 const PER_MEMBER = ['budget', 'expenses', 'debts']; // pestañas que se editan por miembro, no en la vista familiar
 
 // ---------- Estado ----------
@@ -27,7 +27,7 @@ let ui = { tab: 'home', unlocked: false, onb: { step: 0, members: [''], mode: 'i
 function blankState() {
   return {
     v: 1,
-    settings: { lang: (navigator.language || 'es').startsWith('en') ? 'en' : 'es', currency: 'CLP', theme: 'auto', mode: 'individual', pw: null, onboarded: false, alertPct: 80, reminder: { on: false, freq: 'weekly', last: 0 } },
+    settings: { lang: (navigator.language || 'es').startsWith('en') ? 'en' : 'es', currency: 'CLP', theme: 'auto', mode: 'individual', pw: null, onboarded: false, alertPct: 80, lockMin: 3, reminder: { on: false, freq: 'weekly', last: 0 } },
     profiles: [], active: null, month: monthKey(new Date()),
   };
 }
@@ -827,6 +827,7 @@ function viewMore() {
       <section class="card"><h2>${esc(t('security'))}</h2>
         <p class="small muted row">${icon('lock')}${esc(s.pw ? t('passwordOn') : t('passwordOff'))}</p>
         <div class="row wrap">${s.pw ? `<button class="btn" data-act="pw-set">${esc(t('changePassword'))}</button><button class="btn danger" data-act="pw-remove">${esc(t('removePassword'))}</button>` : `<button class="btn" data-act="pw-set">${esc(t('setPassword'))}</button>`}</div>
+        ${s.pw ? `<div class="set-row"><span style="flex:1">${esc(t('lockAfter'))}</span><select class="input" style="width:auto" data-change="lockMin">${[1, 3, 5, 10, 15].map((v) => opt(String(v), v + ' min', String(s.lockMin || 3))).join('')}</select></div>` : ''}
         <div class="set-row"><span>${esc(t('biometric'))}</span><span class="badge warn">${esc(t('soon'))}</span></div>
       </section>
       ${isStandalone() ? '' : `<section class="card"><h2>${esc(t('installSection'))}</h2>${installBanner(true)}</section>`}
@@ -1432,6 +1433,7 @@ document.addEventListener('change', (e) => {
     case 'currency': if (!S.settings.onboarded) syncOnbInputs(); S.settings.currency = el.value; break;
     case 'theme': S.settings.theme = el.value; break;
     case 'alertPct': S.settings.alertPct = Number(el.value); break;
+    case 'lockMin': S.settings.lockMin = Number(el.value); touchActive(); break;
     case 'rem-on':
       S.settings.reminder.on = el.checked; S.settings.reminder.last = Date.now();
       if (el.checked && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
@@ -1458,7 +1460,7 @@ document.addEventListener('submit', async (e) => {
   const f = e.target.closest('[data-form]'); if (!f) return;
   e.preventDefault();
   if (f.dataset.form === 'unlock') {
-    if (await checkPw($('#lock-pw').value)) { ui.unlocked = true; render(); }
+    if (await checkPw($('#lock-pw').value)) { ui.unlocked = true; touchActive(); render(); }
     else { $('#lock-err').classList.remove('hidden'); $('#lock-pw').select(); }
     return;
   }
@@ -1543,6 +1545,24 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
 }
 // pide al navegador no borrar los datos de la app por falta de espacio
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
+// ---------- Bloqueo con tiempo de gracia ----------
+// Al minimizar, el celular puede cerrar la app; si vuelve antes de lockMin minutos, no se pide la contraseña.
+const ACTIVE_KEY = 'mis6cuentas.lastActive';
+const graceMs = () => (Number(S.settings.lockMin) || 3) * 60 * 1000;
+function touchActive() { if (ui.unlocked) { try { localStorage.setItem(ACTIVE_KEY, String(Date.now())); } catch (e) {} } }
+function lastActive() { try { return Number(localStorage.getItem(ACTIVE_KEY)) || 0; } catch (e) { return 0; } }
+function withinGrace() { const d = Date.now() - lastActive(); return d >= 0 && d < graceMs(); }
+if (S.settings.pw && withinGrace()) ui.unlocked = true;
+setInterval(() => { if (!document.hidden) touchActive(); }, 15000);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { touchActive(); return; }
+  // de vuelta en la app: si estuvo fuera más del tiempo permitido, se bloquea
+  if (S.settings.pw && ui.unlocked && !withinGrace()) { ui.unlocked = false; closeModal(); render(); }
+  else touchActive();
+});
+// si el sistema cierra la app estando en segundo plano, no se renueva el tiempo (cuenta desde que saliste)
+window.addEventListener('pagehide', () => { if (!document.hidden) touchActive(); });
 
 render();
 maybeNotify();
